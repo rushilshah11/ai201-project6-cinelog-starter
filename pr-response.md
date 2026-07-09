@@ -1,7 +1,49 @@
 # PR Response Doc — CineLog Watchlist Feature
 
 ## AI Usage
-<!-- Fill in at the end — how you used AI tools during this project -->
+I used Claude (an AI coding assistant) throughout this project, in a few
+distinct ways:
+
+- **Codebase orientation.** Before touching any review comment, I had it
+  read `models.py`, `services/collection_service.py`, and
+  `tests/test_collection.py` in full and summarize the naming
+  convention (verb_to_noun), the two-layer dedup pattern
+  (app-level check + DB `UniqueConstraint`), and the test fixture
+  structure. I verified this against the actual code rather than taking
+  the summary at face value — e.g. I confirmed `AlreadyInCollectionError`
+  really is checked via a `filter_by().first()` call before insert, not
+  just described that way.
+- **Pattern replication, not generation.** For Comment 2 (dedup) and
+  Comment 3 (test), I asked it to explain what
+  `add_to_collection()`/`test_add_to_collection_nonexistent_film_raises`
+  do step by step, then wrote the watchlist equivalents myself against
+  that understanding, rather than asking it to generate the dedup logic
+  or the test directly.
+- **Self-critiquing the design arguments (Comments 4 & 5).** While
+  drafting the visibility and sort-order positions, I had it push back
+  on my own draft before I finalized it. For Comment 4, the pushback was
+  that a "public by default, per-entry toggle" design is a real
+  consent/disclosure problem if there's no UI surfacing the default —
+  I hadn't originally framed the tradeoff that sharply, and I folded
+  that directly into the "Tradeoff acknowledged" section rather than
+  leaving my position as a one-sided justification. For Comment 5, the
+  pushback was that recency-first ordering doesn't serve someone
+  browsing/searching a *large* watchlist by title — I agreed it's a
+  legitimate point but not one that changes the default, so I captured
+  it in "Engagement with reviewer's point" as a scoped-out future
+  enhancement (`?sort=title`) instead of ignoring it.
+- **Git conflict/history archaeology (Comment 6 + commit cleanup).**
+  During the `main` rebase and the later interactive rebase to clean up
+  commit messages, I used it to diff conflicting sides of `models.py`
+  (`git show :2:` vs `:3:`) and to trace exactly which commit in history
+  first introduced the `WatchlistEntry` model (`git log --all -- models.py`),
+  since that turned out to matter for splitting a bundled commit
+  correctly rather than guessing at the split point.
+
+Where this stopped: I didn't ask it to write the dedup check, the test,
+or the Comment 4/5 arguments outright — those are my own reasoning and
+code, with AI used to check my understanding of existing patterns and
+to stress-test my conclusions before committing to them.
 
 ## Comment 1 — Rename
 **What I did:** Renamed `save_to_watchlist()` to `add_to_watchlist()` in
@@ -160,4 +202,74 @@ and confirmed in `models.py` that `WatchlistEntry.film_id` is
 `CollectionEntry`.
 
 ## PR Description
-<!-- Written at the end — feature overview, design decisions, manual testing steps -->
+
+### What this adds
+A watchlist feature: users can save films they want to watch later,
+separate from their collection of films they've already watched.
+
+- `WatchlistEntry` model (`models.py`) — one row per user/film pair,
+  with `date_added` and a `public` visibility flag.
+- `POST /watchlist/<user_id>/add` — add a film to a user's watchlist.
+  Body: `{ "film_id": "<uuid>" }`. Returns 404 if the film doesn't
+  exist, and prevents duplicate entries for the same user/film pair.
+- `GET /watchlist/<user_id>` — return a user's watchlist, sorted by
+  date added (newest first).
+
+### Design decisions
+- **Visibility default (`public=True`):** kept `public` defaulting to
+  `True`. A watchlist that's private by default is a watchlist no one
+  else can discover, which undercuts the reason to build a social
+  "want to watch" feature in the first place — and unlike
+  `CollectionEntry`, a watchlist entry is just an aspiration, not a
+  logged rating, so it's lower-stakes to share. The real risk is that
+  users won't realize their entries are visible by default without a
+  UI affordance that makes that clear at add-time — that's flagged as
+  follow-up work, not something this PR's schema alone resolves. Full
+  reasoning in Comment 4 above.
+- **Sort order (date added, newest first):** `get_watchlist()` sorts by
+  `date_added` descending instead of alphabetically by title. A
+  watchlist is a queue of intent — users check it to decide what to
+  watch next, and recency is a stronger signal than title for that.
+  This also matches `get_collection()`'s existing "newest first"
+  convention instead of introducing a second, inconsistent sort order
+  in the same API. Full reasoning in Comment 5 above.
+
+### Manual testing steps
+1. Start the app (`flask run`, or however the project is normally run
+   locally) with a fresh/empty database.
+2. Create a user and a couple of films (via the existing
+   `/collection` or direct DB seeding, since there's no dedicated user/
+   film-creation endpoint in this PR).
+3. Add a film to the watchlist:
+   `POST /watchlist/<user_id>/add` with body `{ "film_id": "<uuid>" }`.
+   Expect `201` and the created entry back, with `"public": true`.
+4. Try adding the same film again for the same user. Expect a
+   duplicate-prevention error rather than a second row being created
+   (verify via `GET /watchlist/<user_id>` still shows one entry).
+5. Add a second, different film to the same user's watchlist.
+   `GET /watchlist/<user_id>` should return both films with the most
+   recently added one first.
+6. Try adding a film with a nonexistent `film_id` (e.g. a random UUID).
+   Expect a "film not found" error, not a 500 or a raw DB error.
+7. Run the automated suite to confirm both the new watchlist tests and
+   the existing collection tests still pass:
+   `pytest tests/ -v`
+
+## Screenshot
+
+![Screenshot](Screenshot%202026-07-09%20at%207.24.14%20PM.png)
+
+If you can't see screenshot: 
+
+e91e944 (HEAD -> feature/watchlist, origin/feature/watchlist) docs: add pr-response.md with review responses and design decisions
+a1d0650 fix: default watchlist sort order to date added (newest first)
+1153c09 test: add test for nonexistent film_id in add_to_watchlist
+37ccd59 fix: update WatchlistEntry film_id to UUID after main branch refactor
+7abed2c fix: add deduplication check to prevent duplicate watchlist entries
+5349881 fix: rename save_to_watchlist to add_to_watchlist per naming convention
+6d45c75 fix: update film retrieval method to use db.session.get in collection and watchlist services
+c645987 feat: add watchlist model and add_to_watchlist endpoint
+bbe206c (origin/main, origin/HEAD, main) Merge pull request #2 from ascherj/chore/add-gitignore
+718a9a8 chore: add .gitignore for generated files
+07ca580 refactor: migrate film IDs from integer to UUID
+014ae54 feat: initial CineLog API with film collection feature
